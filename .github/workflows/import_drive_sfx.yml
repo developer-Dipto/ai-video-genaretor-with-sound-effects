@@ -1,18 +1,18 @@
-name: Import SFX from Google Drive
+name: Sync SFX from Google Drive
 
 on:
   workflow_dispatch:
     inputs:
       drive_url:
-        description: 'Public Google Drive Folder URL'
+        description: 'Your Google Drive Folder URL (যেখানে আপনি রিনেম করে ফাইল সেভ করেছেন)'
         required: true
-        default: 'PASTE_YOUR_DRIVE_LINK_HERE'
+        type: string
 
 jobs:
-  import_drive_files:
+  sync_sfx:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # রিপোজিটরিতে ফাইল সেভ করার পারমিশন
+      contents: write  # রিপোজিটরিতে ডিলিট এবং নতুন ফাইল পুশ করার পারমিশন
 
     steps:
       - name: Checkout Repository
@@ -26,32 +26,38 @@ jobs:
       - name: Install gdown (Drive Downloader)
         run: pip install gdown
 
-      - name: Download Files from Drive
+      - name: Delete Old SFX Files
         run: |
-          # ফোল্ডার তৈরি করা যদি না থাকে
+          echo "Deleting old sound effects..."
+          # ফোল্ডার থাকলে ভেতরের সব ফাইল মুছে ফেলবে, না থাকলে ফোল্ডারটি তৈরি করবে
+          rm -rf assets/soundEffects/*
           mkdir -p assets/soundEffects
-          
+          echo "✅ Old files deleted successfully."
+
+      - name: Download New SFX Files
+        run: |
+          echo "Downloading new files from Google Drive..."
           # gdown দিয়ে ফোল্ডার ডাউনলোড করা
-          # --folder ফ্ল্যাগ পুরো ফোল্ডার নামাবে
-          # --remaining-ok যদি কোনো ফাইল ফেইল করে বাকিগুলো নামাবে
-          gdown "${{ github.event.inputs.drive_url }}" -O assets/soundEffects --folder --remaining-ok
+          gdown "${{ inputs.drive_url }}" -O assets/soundEffects --folder --remaining-ok
 
       - name: Verify Downloads
         run: |
-          echo "Downloaded files:"
+          echo "📂 Downloaded files:"
           ls -R assets/soundEffects
 
       - name: Commit and Push Changes
         run: |
-          git config --global user.name "GitHub Actions Bot"
-          git config --global user.email "actions@github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          git add assets/soundEffects/*
+          # ডিলিট হওয়া এবং নতুন যোগ হওয়া সব ফাইল ট্র্যাকিংয়ে আনা
+          git add assets/soundEffects/
           
-          # যদি নতুন ফাইল থাকে তবেই পুশ করবে
+          # যদি কোনো পরিবর্তন থাকে তবেই পুশ করবে
           if git diff --staged --quiet; then
-            echo "No changes to commit."
+            echo "No changes found. Everything is up to date."
           else
-            git commit -m "Imported SFX from Google Drive"
+            git commit -m "🔄 Synced fresh sound effects from Google Drive"
             git push
+            echo "✅ Successfully synced to GitHub!"
           fi
