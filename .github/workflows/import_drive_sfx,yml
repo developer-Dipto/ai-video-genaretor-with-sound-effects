@@ -1,0 +1,57 @@
+name: Import SFX from Google Drive
+
+on:
+  workflow_dispatch:
+    inputs:
+      drive_url:
+        description: 'Public Google Drive Folder URL'
+        required: true
+        default: 'PASTE_YOUR_DRIVE_LINK_HERE'
+
+jobs:
+  import_drive_files:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # রিপোজিটরিতে ফাইল সেভ করার পারমিশন
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install gdown (Drive Downloader)
+        run: pip install gdown
+
+      - name: Download Files from Drive
+        run: |
+          # ফোল্ডার তৈরি করা যদি না থাকে
+          mkdir -p assets/soundEffects
+          
+          # gdown দিয়ে ফোল্ডার ডাউনলোড করা
+          # --folder ফ্ল্যাগ পুরো ফোল্ডার নামাবে
+          # --remaining-ok যদি কোনো ফাইল ফেইল করে বাকিগুলো নামাবে
+          gdown "${{ github.event.inputs.drive_url }}" -O assets/soundEffects --folder --remaining-ok
+
+      - name: Verify Downloads
+        run: |
+          echo "Downloaded files:"
+          ls -R assets/soundEffects
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          
+          git add assets/soundEffects/*
+          
+          # যদি নতুন ফাইল থাকে তবেই পুশ করবে
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Imported SFX from Google Drive"
+            git push
+          fi
