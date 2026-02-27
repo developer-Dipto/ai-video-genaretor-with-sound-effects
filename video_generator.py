@@ -3,185 +3,190 @@ import os
 import requests
 import numpy as np
 from PIL import Image
-# AudioFileClip এবং CompositeAudioClip ইম্পোর্ট করা হলো সাউন্ডের জন্য
 from moviepy.editor import ImageClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip
 import traceback
 
 # API Configuration
-API_KEY = os.getenv("API_KEY")
-if not API_KEY or API_KEY == "":
-    API_KEY = "01828567716"  # আপনার ব্যাকআপ কি
-
+API_KEY = os.getenv("API_KEY", "01828567716") # Fallback key
 API_URL = "https://simple-ai-image-genaretor.deptoroy91.workers.dev/"
-
-print(f"DEBUG: Using API Key starting with: {API_KEY[:3]}... (Total length: {len(API_KEY)})")
-
 DIMENSIONS = {"16:9": (1920, 1080), "9:16": (1080, 1920)}
 
-# --- Helper Function for Time Parsing ---
-def parse_time_to_seconds(time_input):
-    """
-    Converts 'MM:SS' string or numeric input to seconds (float).
-    Examples: "1:13" -> 73.0, "0:05" -> 5.0, 10 -> 10.0
-    """
+# --- Helper: Time Parser ---
+def parse_time(val):
+    """Converts 'MM:SS' or int/float to seconds"""
+    if val is None: return 0
     try:
-        time_str = str(time_input)
-        if ":" in time_str:
-            parts = time_str.split(":")
-            if len(parts) == 2:
-                minutes = float(parts[0])
-                seconds = float(parts[1])
-                return (minutes * 60) + seconds
-        return float(time_str)
-    except Exception as e:
-        print(f"Error parsing time '{time_input}': {e}")
+        val = str(val)
+        if ":" in val:
+            m, s = val.split(":")
+            return (float(m) * 60) + float(s)
+        return float(val)
+    except:
         return 0.0
 
-def generate_image(prompt, size_ratio, scene_n):
-    print(f"Generating Scene {scene_n}...")
-    
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": str(API_KEY).strip() 
-    }
-    
-    payload = {
-        "prompt": prompt,
-        "size": size_ratio,
-        "model": "@cf/black-forest-labs/flux-1-schnell"
-    }
+# --- Helper: Generate Image ---
+def generate_image(prompt, ratio, index):
+    print(f"Generating Scene {index}...")
+    headers = {"Content-Type": "application/json", "x-api-key": str(API_KEY).strip()}
+    payload = {"prompt": prompt, "size": ratio, "model": "@cf/black-forest-labs/flux-1-schnell"}
     
     try:
+        # Check if image already exists (caching for local testing)
+        filename = f"scene_{index}.jpg"
+        if os.path.exists(filename):
+            print(f"Skipping download, {filename} exists.")
+            return filename
+
         response = requests.post(API_URL, json=payload, headers=headers, timeout=120)
         if response.status_code == 200:
-            path = f"scene_{scene_n}.jpg"
-            with open(path, "wb") as f:
+            with open(filename, "wb") as f:
                 f.write(response.content)
-            print(f"Success: Saved scene_{scene_n}.jpg")
-            return path
+            return filename
         else:
-            print(f"API Failed (Status {response.status_code}): {response.text}")
+            print(f"API Error {response.status_code}: {response.text}")
             return None
     except Exception as e:
         print(f"Request Error: {e}")
         return None
 
-def apply_motion(clip, motion_type, size):
+# --- Helper: Motion Effect ---
+def apply_motion(clip, motion, size):
     w, h = size
     def effect(get_frame, t):
         img = Image.fromarray(get_frame(t))
         p = t / clip.duration
-        s = 1.2 
-        if motion_type == "zoom-in": s = 1.0 + (0.2 * p)
-        elif motion_type == "zoom-out": s = 1.2 - (0.2 * p)
+        s = 1.0
+        if motion == "zoom-in": s = 1.0 + (0.15 * p) # Smooth zoom
+        elif motion == "zoom-out": s = 1.15 - (0.15 * p)
+        
         nw, nh = int(w * s), int(h * s)
         img = img.resize((nw, nh), Image.Resampling.LANCZOS)
-        ox, oy = (nw - w) / 2, (nh - h) / 2
-        if motion_type == "pan-right": ox = (nw - w) * p
-        elif motion_type == "pan-left": ox = (nw - w) * (1 - p)
-        elif motion_type == "pan-down": oy = (nh - h) * p
-        elif motion_type == "pan-up": oy = (nh - h) * (1 - p)
-        return np.array(img.crop((ox, oy, ox + w, oy + h)).resize((w, h)))
-    return clip.fl(effect)
-
-def build_video():
-    try:
-        json_str = os.getenv("JSON_INPUT")
-        if not json_str:
-            print("ERROR: JSON_INPUT is empty.")
-            return
         
-        data = json.loads(json_str)
-        ratio = data["global_settings"].get("ratio", "16:9")
+        # Center crop logic
+        ox, oy = (nw - w) / 2, (nh - h) / 2
+        
+        if motion == "pan-right": ox = (nw - w) * p
+        elif motion == "pan-left": ox = (nw - w) * (1 - p)
+        elif motion == "pan-up": oy = (nh - h) * (1 - p)
+        elif motion == "pan-down": oy = (nh - h) * p
+        
+        return np.array(img.crop((ox, oy, ox + w, oy + h)).resize((w, h)))
+    
+    return clip.fl(effect) if motion != "none" else clip
+
+# --- MAIN BUILDER FUNCTION ---
+def build_video(input_data=None):
+    try:
+        # 1. Handle Input (Object vs JSON String)
+        data = {}
+        if input_data:
+            # If function is called with a Dictionary/Object directly
+            data = input_data if isinstance(input_data, dict) else json.loads(input_data)
+        else:
+            # Fallback to Environment Variable (GitHub Actions)
+            json_str = os.getenv("JSON_INPUT")
+            if not json_str:
+                print("❌ Error: No input provided.")
+                return
+            data = json.loads(json_str)
+
+        # Settings
+        ratio = data.get("global_settings", {}).get("ratio", "16:9")
         W, H = DIMENSIONS.get(ratio, (1920, 1080))
         
-        # 1. Video Clips Processing
+        # 2. Process Scenes (Visuals)
         video_clips = []
-        for scene in data["scenes"]:
-            img_path = generate_image(scene["bg_prompt"], ratio, scene["scene_n"])
-            if img_path:
-                c = ImageClip(img_path).set_duration(scene.get("duration", 5))
-                c = apply_motion(c, scene.get("motion", "none"), (W, H))
-                if scene.get("transition") == "crossfade": 
-                    c = c.crossfadein(1.0)
-                video_clips.append(c)
+        scenes = data.get("scenes", [])
         
+        # 'enumerate' gives us the index (0, 1, 2...), so we don't need scene_n input
+        for idx, scene in enumerate(scenes):
+            scene_num = idx + 1 # 1, 2, 3...
+            img_path = generate_image(scene["bg_prompt"], ratio, scene_num)
+            
+            if img_path:
+                dur = parse_time(scene.get("duration", 5))
+                c = ImageClip(img_path).set_duration(dur)
+                c = apply_motion(c, scene.get("motion", "none"), (W, H))
+                
+                if scene.get("transition") == "crossfade":
+                    c = c.crossfadein(1.0)
+                
+                video_clips.append(c)
+
         if not video_clips:
-            print("No video clips generated.")
+            print("❌ No scenes generated.")
             return
 
         final_video = concatenate_videoclips(video_clips, method="compose")
-        
-        # 2. Sound Effects Processing (NEW FEATURE)
+        print(f"🎥 Video created. Duration: {final_video.duration}s")
+
+        # 3. Process Sound Effects (Advanced)
         audio_clips = []
+        assets_dir = "assets/soundEffects"
         
-        # Check if soundEffects exists in JSON
-        if "soundEffects" in data and isinstance(data["soundEffects"], list):
-            print("Processing Sound Effects...")
+        for sfx in data.get("soundEffects", []):
+            name = sfx.get("name")
+            start_t = parse_time(sfx.get("start", 0))
+            vol = float(sfx.get("volume", 0.5))
             
-            # Ensure assets directory logic handles missing folders gracefully
-            assets_dir = "assets/soundEffects"
-            
-            for sfx in data["soundEffects"]:
-                name = sfx.get("name")
-                start_raw = sfx.get("start", 0)
-                vol = float(sfx.get("volume", 0.5)) # Default volume 0.5 if missing
-                
-                start_time = parse_time_to_seconds(start_raw)
-                
-                # Check for both .mp3 and .wav extensions
-                possible_paths = [
-                    os.path.join(assets_dir, f"{name}.mp3"),
-                    os.path.join(assets_dir, f"{name}.wav")
-                ]
-                
-                found_path = None
-                for p in possible_paths:
-                    if os.path.exists(p):
-                        found_path = p
-                        break
-                
-                if found_path:
-                    try:
-                        # Load audio, set start time and volume
-                        audioclip = AudioFileClip(found_path)
-                        audioclip = audioclip.set_start(start_time).volumex(vol)
-                        audio_clips.append(audioclip)
-                        print(f"  [+] Added SFX: {name} at {start_time}s (Vol: {vol})")
-                    except Exception as e:
-                        print(f"  [!] Error loading SFX '{name}': {e}")
-                else:
-                    print(f"  [-] Warning: SFX file not found for '{name}' in {assets_dir}")
+            # Optional Parameters
+            duration = sfx.get("duration") # Cut audio length
+            fade_in = sfx.get("fade_in", 0)
+            fade_out = sfx.get("fade_out", 0)
 
-        # 3. Merge Audio and Video
+            # Find file
+            f_path = None
+            for ext in [".mp3", ".wav", ".ogg"]:
+                p = os.path.join(assets_dir, name + ext)
+                if os.path.exists(p):
+                    f_path = p
+                    break
+            
+            if f_path:
+                try:
+                    ac = AudioFileClip(f_path).volumex(vol)
+                    
+                    # Apply Trimming (Custom Duration)
+                    if duration:
+                        dur_sec = parse_time(duration)
+                        if dur_sec < ac.duration:
+                            ac = ac.subclip(0, dur_sec)
+                    
+                    # Apply Fades
+                    if fade_in > 0: ac = ac.audio_fadein(fade_in)
+                    if fade_out > 0: ac = ac.audio_fadeout(fade_out)
+                    
+                    # Set Start Time
+                    ac = ac.set_start(start_t)
+                    audio_clips.append(ac)
+                    print(f"✅ Added SFX: {name} | Start: {start_t}s")
+                except Exception as e:
+                    print(f"⚠️ Error with SFX {name}: {e}")
+            else:
+                print(f"❌ SFX File not found: {name}")
+
+        # 4. Merge Audio & Export
         if audio_clips:
-            # Combine all SFX clips
-            composite_audio = CompositeAudioClip(audio_clips)
-            
-            # ভিডিওর দৈর্ঘ্যের চেয়ে অডিও বড় হলে কেটে ফেলা (যাতে ভিডিওর শেষে কালো স্ক্রিন না আসে)
-            # তবে আপনার যদি ভিডিওর চেয়ে বড় অডিও প্রয়োজন না হয়, এই লাইনটি সেইফটি হিসেবে কাজ করবে
-            if composite_audio.duration > final_video.duration:
-                composite_audio = composite_audio.set_duration(final_video.duration)
-            
-            # Attach audio to video
-            final_video = final_video.set_audio(composite_audio)
-            print("Audio tracks merged successfully.")
-        else:
-            print("No audio tracks to merge.")
+            comp_audio = CompositeAudioClip(audio_clips)
+            # Clip audio to match video duration prevents black frames/silence at end
+            if comp_audio.duration > final_video.duration:
+                comp_audio = comp_audio.set_duration(final_video.duration)
+            final_video = final_video.set_audio(comp_audio)
 
-        # 4. Export Final Video
         final_video.write_videofile(
             "final_video.mp4", 
             fps=24, 
             codec="libx264", 
-            audio_codec="aac", # Audio codec added
+            audio_codec="aac",
             preset="ultrafast", 
             threads=2
         )
-        print("Video generated successfully!")
+        print("🎉 Render Complete: final_video.mp4")
 
     except Exception as e:
         print(traceback.format_exc())
 
+# --- ENTRY POINT ---
 if __name__ == "__main__":
+    # GitHub Actions will use env var, but you can also pass a dict directly here for local testing
     build_video()
